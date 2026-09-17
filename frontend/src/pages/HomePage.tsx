@@ -48,22 +48,38 @@ function HomePage() {
 
   return (
     <div className="landing-page">
-      <div className="landing-shell">
-        <div className="landing-badge">Real-time collaboration</div>
+      <main className="landing-shell">
+        <section className="landing-hero">
+          <div className="landing-badge">
+            Distributed real-time collaboration
+          </div>
 
-        <h1 className="landing-title">LiveCollab</h1>
+          <h1 className="landing-title">LiveCollab</h1>
 
-        <p className="landing-subtitle">
-          Create a room, invite others, and edit together in real time with
-          shared state, presence tracking, and live updates.
-        </p>
+          <p className="landing-subtitle">
+            A fault-tolerant collaborative editor built with Go, WebSockets,
+            Redis Streams, and ordered event replay.
+          </p>
 
-        <div className="landing-card">
+          <div className="landing-features">
+            <span>Multi-node realtime</span>
+            <span>Ordered reconnect replay</span>
+            <span>Failure recovery</span>
+          </div>
+        </section>
+
+        <section className="landing-card">
+          <div className="landing-card-heading">
+            <h2>Start a session</h2>
+            <p>Create a new room or join an existing one.</p>
+          </div>
+
           <label className="landing-label">Your name</label>
+
           <input
             className="landing-input"
             type="text"
-            placeholder="Enter your name"
+            placeholder="e.g. Smriti"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
           />
@@ -76,22 +92,35 @@ function HomePage() {
             {isCreating ? "Creating room..." : "Create new room"}
           </button>
 
-          <div className="landing-or">or join an existing room</div>
+          <div className="landing-divider">
+            <span>or join an existing room</span>
+          </div>
 
           <div className="landing-join-row">
             <input
               className="landing-input"
               type="text"
-              placeholder="Enter room ID"
+              placeholder="Room ID"
               value={roomId}
               onChange={(e) => setRoomId(e.target.value)}
             />
-            <button className="landing-secondary-button" onClick={handleJoinRoom}>
-              Join
+
+            <button
+              className="landing-secondary-button"
+              onClick={handleJoinRoom}
+            >
+              Join room
             </button>
           </div>
+        </section>
+
+        <div className="landing-stack">
+          <span>Go</span>
+          <span>WebSockets</span>
+          <span>Redis Streams</span>
+          <span>OpenTelemetry</span>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

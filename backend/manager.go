@@ -10,16 +10,17 @@ import (
 )
 
 type RoomManager struct {
-	Rooms      map[string]*Room
-	store      *RedisStore
-	instanceID string
-	recorder   *TraceRecorder
-	telemetry  *Telemetry
-	ctx        context.Context
-	cancel     context.CancelFunc
-	watchersMu sync.Mutex
-	watchers   map[string]struct{}
-	mu         sync.RWMutex
+	Rooms            map[string]*Room
+	store            *RedisStore
+	instanceID       string
+	recorder         *TraceRecorder
+	telemetry        *Telemetry
+	ctx              context.Context
+	cancel           context.CancelFunc
+	watchersMu       sync.Mutex
+	watchers         map[string]struct{}
+	presenceWatchers map[string]struct{}
+	mu               sync.RWMutex
 }
 
 func NewRoomManager() *RoomManager {

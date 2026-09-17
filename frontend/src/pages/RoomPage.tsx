@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { WEBSOCKET_BASE_URL } from "../config";
+import { applyPresenceMessage, initialPresence } from "../presence";
+import type { Participant } from "../presence";
 
 function createClientId(username: string | null) {
   const suffix =
@@ -27,7 +29,7 @@ function RoomPage() {
 
   const [pendingUsername, setPendingUsername] = useState("");
   const [status, setStatus] = useState("🟡 Connecting...");
-  const [users, setUsers] = useState<string[]>([]);
+  const [users, setUsers] = useState<Participant[]>([]);
   const [content, setContent] = useState("");
   const [serverVersion, setServerVersion] = useState(0);
   const [lastSequence, setLastSequence] = useState(0);
@@ -64,6 +66,7 @@ function RoomPage() {
 
     let disposed = false;
     let reconnectAttempt = 0;
+    let presence = initialPresence();
 
     const connect = () => {
       if (disposed) return;
@@ -105,14 +108,19 @@ function RoomPage() {
           switch (data.type) {
             case "room_state":
               setContent(data.content || "");
-              setUsers(data.users || []);
               updateServerVersion(data.serverVersion ?? 0);
               updateSequence(data.sequence ?? 0);
               break;
 
-            case "presence_update":
-              setUsers(data.users || []);
+            case "presence_update": {
+              if (disposed || socketRef.current !== ws) break;
+              const next = applyPresenceMessage(presence, data);
+              if (next !== presence) {
+                presence = next;
+                setUsers(next.participants);
+              }
               break;
+            }
 
             case "content_update": {
               const incomingSequence =
@@ -343,10 +351,10 @@ function RoomPage() {
             </div>
           ) : (
             <ul>
-              {users.map((u, i) => (
-                <li key={i}>
+              {users.map((u) => (
+                <li key={u.connectionId}>
                   <span className="user-dot" />
-                  <span>{u}</span>
+                  <span>{u.username}</span>
                 </li>
               ))}
             </ul>

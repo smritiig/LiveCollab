@@ -8,11 +8,16 @@ import (
 )
 
 type Client struct {
-	Conn     *websocket.Conn
-	Username string
-	RoomID   string
-	ClientID string
-	writeMu  sync.Mutex
+	Conn         *websocket.Conn
+	Username     string
+	RoomID       string
+	ClientID     string
+	ConnectionID string
+	InstanceID   string
+	writeMu      sync.Mutex
+	// Protected by writeMu, independently of document replay sequencing.
+	presenceRevision int64
+	presenceSent     bool
 
 	// deliveryMu serializes live content delivery and the replay/live handoff.
 	// Historical writes use writeMu only, so live events can buffer during replay.

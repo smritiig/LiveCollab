@@ -7,6 +7,7 @@ const host = process.env.LIVECOLLAB_TEST_REDIS_HOST || "127.0.0.1";
 
 const strings = new Map();
 const streams = new Map();
+const presence = new Map();
 let lastMs = 0;
 let sameMsCounter = 0;
 
@@ -151,6 +152,29 @@ async function handleCommand(args) {
     const numberOfKeys = Number(args[2]);
     const keys = args.slice(3, 3 + numberOfKeys);
     const argv = args.slice(3 + numberOfKeys);
+
+    // Patch 1 presence scripts: atomic registry/revision/notification changes.
+    // Deliberately no crash expiry; that belongs to Patch 2.
+    if (args[1].includes("livecollab_presence_")) {
+      if (!presence.has(keys[0])) presence.set(keys[0], new Map());
+      const records = presence.get(keys[0]);
+      const revision = Number(strings.get(keys[1]) || "0");
+      if (args[1].includes("livecollab_presence_snapshot")) {
+        return [revision, [...records.values()]];
+      }
+      const connectionId = argv[0];
+      if (args[1].includes("livecollab_presence_join")) {
+        if (records.has(connectionId)) return revision;
+        records.set(connectionId, argv[1]);
+      } else if (args[1].includes("livecollab_presence_leave")) {
+        if (!records.delete(connectionId)) return revision;
+      } else {
+        return { error: "ERR unknown presence script" };
+      }
+      strings.set(keys[1], String(revision + 1));
+      entriesFor(keys[2]).push({ id: nextStreamId(), fields: { revision: String(revision + 1) } });
+      return revision + 1;
+    }
 
     // Create-room script: four keys and no ARGV.
     if (numberOfKeys === 4 && argv.length === 0) {

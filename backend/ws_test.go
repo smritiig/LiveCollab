@@ -23,6 +23,10 @@ import (
 // This fixture speaks RESP over real TCP connections. Commands share an atomic
 // log/state, and XREAD waits on notifications instead of polling with sleeps.
 type replayRedis struct {
+	presenceRecords   map[string]map[string]string
+	presenceRevisions map[string]int64
+	presenceChanged   chan struct{}
+
 	mu             sync.Mutex
 	events         []DistributedEvent
 	changed        chan struct{}
@@ -117,6 +121,10 @@ func (f *replayRedis) signal(ch chan int64, n int64) {
 }
 
 func (f *replayRedis) command(a []string, observe bool) any {
+	if (a[0] == "EVAL" && strings.Contains(a[1], "livecollab_presence_")) ||
+		(a[0] == "XREAD" && strings.HasSuffix(a[len(a)-2], ":presence-events")) {
+		return f.presenceCommand(a)
+	}
 	if a[0] == "XREAD" {
 		cursor := streamNumber(a[len(a)-1])
 		if observe {

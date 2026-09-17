@@ -6,13 +6,14 @@ import (
 )
 
 type Room struct {
-	ID       string
-	Content  string
-	Version  int64
-	Sequence int64
-	Clients  []*Client
-	Store    *RedisStore
-	mu       sync.RWMutex
+	ID                    string
+	Content               string
+	Version               int64
+	Sequence              int64
+	Clients               []*Client
+	Store                 *RedisStore
+	mu                    sync.RWMutex
+	localPresenceRevision int64
 }
 
 type RoomSnapshot struct {
@@ -37,6 +38,9 @@ func (r *Room) AddClient(client *Client) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.Clients = append(r.Clients, client)
+	if r.Store == nil {
+		r.localPresenceRevision++
+	}
 }
 
 func (r *Room) GetUsernames() []string {
@@ -164,7 +168,10 @@ func (r *Room) applySnapshot(snapshot RoomSnapshot) {
 }
 
 func (r *Room) BroadcastPresence() {
-	r.BroadcastJSON(Message{Type: "presence_update", Users: r.GetUsernames()})
+	// Distributed membership is emitted only from authoritative Redis snapshots.
+	if r.Store == nil {
+		r.broadcastPresenceSnapshot(r.localPresenceSnapshot())
+	}
 }
 
 func (r *Room) RemoveClient(target *Client) {
@@ -176,6 +183,9 @@ func (r *Room) RemoveClient(target *Client) {
 		if client != target {
 			updatedClients = append(updatedClients, client)
 		}
+	}
+	if r.Store == nil && len(updatedClients) != len(r.Clients) {
+		r.localPresenceRevision++
 	}
 	r.Clients = updatedClients
 }

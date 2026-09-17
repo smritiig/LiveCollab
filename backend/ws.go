@@ -40,7 +40,12 @@ func serveWS(manager *RoomManager, config Config, recorder *TraceRecorder, telem
 		return
 	}
 
-	client := &Client{Conn: conn, Username: username, RoomID: roomID, ClientID: clientID}
+	connectionID, err := newConnectionID()
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	client := &Client{Conn: conn, Username: username, RoomID: roomID, ClientID: clientID, ConnectionID: connectionID, InstanceID: config.InstanceID}
 	if room.Store != nil && lastSequence > 0 {
 		client.beginReplay(lastSequence)
 	}
@@ -61,7 +66,14 @@ func serveWS(manager *RoomManager, config Config, recorder *TraceRecorder, telem
 		telemetry.Metrics.WebSocketDisconnected()
 		telemetry.Logger.Event("info", "websocket_disconnected", map[string]any{"roomId": roomID, "clientId": clientID})
 		room.RemoveClient(client)
-		room.BroadcastPresence()
+		if room.Store != nil {
+			// Best-effort graceful removal only. Patch 2 will address crash expiry.
+			if err := room.Store.LeavePresence(room.ID, client.ConnectionID); err != nil {
+				telemetry.Logger.Event("error", "presence_leave_failed", map[string]any{"roomId": room.ID, "connectionId": client.ConnectionID, "error": err.Error()})
+			}
+		} else {
+			room.BroadcastPresence()
+		}
 		recorder.Record(TraceEvent{
 			Stage:      "client_disconnected",
 			InstanceID: config.InstanceID,
@@ -75,7 +87,16 @@ func serveWS(manager *RoomManager, config Config, recorder *TraceRecorder, telem
 	}()
 
 	room.AddClient(client)
-	room.BroadcastPresence()
+	if room.Store != nil {
+		if err := room.Store.JoinPresence(room.ID, client.participant()); err != nil {
+			telemetry.Logger.Event("error", "presence_join_failed", map[string]any{"roomId": room.ID, "connectionId": client.ConnectionID, "error": err.Error()})
+			_ = client.WriteJSON(Message{Type: "error", Reason: "presence_unavailable"})
+			return
+		}
+		manager.ensurePresenceWatcher(room)
+	} else {
+		room.BroadcastPresence()
+	}
 
 	if room.Store != nil && lastSequence > 0 {
 		if err := resumeClient(room, client, lastSequence, config, recorder, telemetry); err != nil {
@@ -88,10 +109,21 @@ func serveWS(manager *RoomManager, config Config, recorder *TraceRecorder, telem
 		if err := client.WriteJSON(Message{
 			Type:          "room_state",
 			Content:       snapshot.Content,
-			Users:         room.GetUsernames(),
+			Users:         room.roomStateUsers(),
 			ServerVersion: snapshot.Version,
 			Sequence:      snapshot.Sequence,
 		}); err != nil {
+			return
+		}
+	}
+
+	if room.Store != nil {
+		presence, err := room.Store.GetPresence(room.ID)
+		if err != nil {
+			_ = client.WriteJSON(Message{Type: "error", Reason: "presence_unavailable"})
+			return
+		}
+		if err := client.writePresence(presence); err != nil {
 			return
 		}
 	}
@@ -340,7 +372,7 @@ func handleContentUpdate(room *Room, client *Client, incoming Message, config Co
 		_ = client.WriteJSON(Message{
 			Type:          "room_state",
 			Content:       result.Content,
-			Users:         room.GetUsernames(),
+			Users:         room.roomStateUsers(),
 			ServerVersion: result.ServerVersion,
 			Sequence:      result.Sequence,
 			Reason:        "resync_after_conflict",
