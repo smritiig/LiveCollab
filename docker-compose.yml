@@ -1,0 +1,131 @@
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - livecollab-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  backend-a:
+    build:
+      context: ./backend
+    environment:
+      PORT: "8080"
+      ALLOWED_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
+      LIVECOLLAB_STALE_WRITE_POLICY: "reject"
+      LIVECOLLAB_REDIS_ADDR: "redis:6379"
+      LIVECOLLAB_INSTANCE_ID: "backend-a"
+      LIVECOLLAB_JSON_LOGS: "true"
+      LIVECOLLAB_ENABLE_DEBUG_FAULTS: "true"
+      OTEL_SERVICE_NAME: "livecollab-backend"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+    ports:
+      - "8081:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  backend-b:
+    build:
+      context: ./backend
+    environment:
+      PORT: "8080"
+      ALLOWED_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
+      LIVECOLLAB_STALE_WRITE_POLICY: "reject"
+      LIVECOLLAB_REDIS_ADDR: "redis:6379"
+      LIVECOLLAB_INSTANCE_ID: "backend-b"
+      LIVECOLLAB_JSON_LOGS: "true"
+      LIVECOLLAB_ENABLE_DEBUG_FAULTS: "true"
+      OTEL_SERVICE_NAME: "livecollab-backend"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+    ports:
+      - "8082:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./infra/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend-a
+      - backend-b
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/livecollab-rules.yml:/etc/prometheus/livecollab-rules.yml:ro
+      - livecollab-prometheus:/prometheus
+    depends_on:
+      - backend-a
+      - backend-b
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ["-config.file=/etc/tempo.yaml"]
+    ports:
+      - "3200:3200"
+    volumes:
+      - ./infra/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - livecollab-tempo:/var/tempo
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3200/ready >/dev/null 2>&1 || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "4318:4318"
+    volumes:
+      - ./infra/otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      tempo:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - livecollab-grafana:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_started
+      tempo:
+        condition: service_healthy
+
+volumes:
+  livecollab-redis:
+  livecollab-prometheus:
+  livecollab-tempo:
+  livecollab-grafana:

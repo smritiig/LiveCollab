@@ -1,0 +1,55 @@
+groups:
+  - name: livecollab-slo-recording
+    interval: 5s
+    rules:
+      - record: livecollab:sli:operation_p95_seconds
+        expr: histogram_quantile(0.95, sum by (le) (rate(livecollab_operation_duration_seconds_bucket[2m])))
+      - record: livecollab:sli:redis_p95_seconds
+        expr: histogram_quantile(0.95, sum by (le) (rate(livecollab_redis_command_duration_seconds_bucket[2m])))
+      - record: livecollab:sli:stream_lag_p95_seconds
+        expr: histogram_quantile(0.95, sum by (le) (rate(livecollab_stream_propagation_lag_seconds_bucket[2m])))
+      - record: livecollab:sli:resume_success_ratio
+        expr: sum(rate(livecollab_resume_success_total[5m])) / clamp_min(sum(rate(livecollab_reconnects_total[5m])), 0.000001)
+
+  - name: livecollab-alerts
+    interval: 5s
+    rules:
+      - alert: LiveCollabHighRedisLatency
+        expr: livecollab:sli:redis_p95_seconds > 0.25
+        for: 30s
+        labels:
+          severity: warning
+          slo: redis-latency
+        annotations:
+          summary: Redis p95 latency is above 250ms
+          description: "LiveCollab Redis command p95 is {{ $value }}s, above the 250ms incident threshold."
+
+      - alert: LiveCollabOperationLatencySLOBreach
+        expr: livecollab:sli:operation_p95_seconds > 0.5
+        for: 30s
+        labels:
+          severity: warning
+          slo: operation-latency
+        annotations:
+          summary: Operation p95 latency is above 500ms
+          description: "Server-side operation p95 is {{ $value }}s."
+
+      - alert: LiveCollabSequenceGapDetected
+        expr: increase(livecollab_sequence_gaps_total[5m]) > 0
+        for: 0s
+        labels:
+          severity: critical
+          correctness: event-ordering
+        annotations:
+          summary: A client resume sequence gap was detected
+          description: "At least one non-contiguous event sequence was observed in the last five minutes."
+
+      - alert: LiveCollabReconnectFailureRate
+        expr: sum(rate(livecollab_resume_failures_total[5m])) / clamp_min(sum(rate(livecollab_reconnects_total[5m])), 0.000001) > 0.01
+        for: 30s
+        labels:
+          severity: critical
+          slo: reconnect-correctness
+        annotations:
+          summary: Reconnect failure ratio is above 1 percent
+          description: "Reconnect recovery is violating the 99 percent short-window success threshold."

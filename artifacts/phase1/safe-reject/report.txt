@@ -1,0 +1,45 @@
+LiveCollab Correctness Test
+==========================================================
+Scenario: stale-concurrent-edit
+Stale-write policy: reject
+Result: PASSED
+
+Invariant
+----------------------------------------------------------
+A stale full-document update must not silently overwrite a newer acknowledged update.
+
+Controlled input
+----------------------------------------------------------
+Initial document: "Start"
+Alice update:    "Start [Alice]"
+Bob update:      "Start [Bob]"
+Bob's frame is held until Alice's update is acknowledged.
+
+Timeline
+----------------------------------------------------------
+  225 ms  Bob sent bob-op-001 from version 1
+  225 ms  Fault proxy held Bob's bob-op-001
+  227 ms  Alice sent alice-op-001 from version 1
+  228 ms  Alice received ACK for alice-op-001
+  228 ms  Server received alice-op-001 (base 1, current 1)
+  228 ms  Server applied alice-op-001 as version 2
+  228 ms  Server returned ACK for alice-op-001
+  231 ms  Bob observed alice-op-001 at version 2
+  232 ms  Alice observed alice-op-001 at version 2
+  265 ms  Fault proxy released Bob's delayed bob-op-001
+  266 ms  Server received bob-op-001 (base 1, current 2)
+  266 ms  Server rejected bob-op-001: stale_base_version
+  267 ms  Server returned CONFLICT for bob-op-001
+  268 ms  Bob received CONFLICT for bob-op-001
+
+Final client state
+----------------------------------------------------------
+Alice v2   2aa559be2f2b  "Start [Alice]"
+Bob   v2   2aa559be2f2b  "Start [Alice]"
+
+INVARIANT PRESERVED
+----------------------------------------------------------
+The server detected Bob's stale base version and rejected the update.
+Alice's acknowledged contribution remained in every final client state.
+
+Replay: node correctness-tests/run-phase1.js --replay artifacts/phase1/safe-reject/replay.json

@@ -1,0 +1,43 @@
+LiveCollab Phase 2 Correctness Report
+
+Scenario: reconnect-replay-across-backend-restart
+Result: PASSED
+
+Topology:
+  Alice -> backend-a
+  Bob   -> backend-b
+  backend-a/backend-b -> Redis Streams
+  Bob reconnects -> restarted backend-a
+
+Failure/recovery sequence:
+  Alice connected to backend-a while Bob connected to backend-b.
+  Bob observed event 1 through backend-b, proving cross-node Redis Stream fanout.
+  Bob disconnected after event 1.
+  Alice committed and received acknowledgements for events 2 through 5.
+  backend-a terminated after acknowledging event 5.
+  backend-a restarted with empty process memory and hydrated room state from Redis.
+  Bob reconnected to the restarted backend-a with resume cursor 1.
+  Bob replayed events 2, 3, 4, 5 and converged to event 5.
+
+Invariants:
+  PASS  cross_node_fanout
+        Bob, connected to backend-b, must observe Alice's event written through backend-a.
+  PASS  zero_event_gaps_after_reconnect
+        Expected replay 2->3->4->5; observed 2->3->4->5.
+  PASS  no_duplicate_replay
+        4 replay events, 4 unique sequence numbers.
+  PASS  monotonic_event_order
+        Replay order was 2->3->4->5.
+  PASS  eventual_convergence_after_restart
+        Bob ended at event 5, version 5; Redis-backed server is event 5, version 5.
+
+Replay observed by Bob:
+  expected: 2, 3, 4, 5
+  observed: 2, 3, 4, 5
+
+Final state:
+  Bob content: "Start [2] [3] [4] [5]"
+  Expected:    "Start [2] [3] [4] [5]"
+  Server:      version 5, event 5
+
+Artifacts: artifacts/phase2/reconnect-replay

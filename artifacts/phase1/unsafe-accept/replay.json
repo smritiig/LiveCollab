@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "scenario": "stale-concurrent-edit",
+  "policy": "accept",
+  "expectedResult": "failed",
+  "input": {
+    "initialContent": "Start",
+    "aliceContent": "Start [Alice]",
+    "bobContent": "Start [Bob]"
+  },
+  "orderedSteps": [
+    "connect Alice and Bob",
+    "write initial document",
+    "hold Bob's content_update frame",
+    "send and acknowledge Alice's update",
+    "release Bob's stale frame",
+    "evaluate the invariant"
+  ]
+}

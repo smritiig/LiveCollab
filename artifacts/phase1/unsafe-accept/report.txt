@@ -1,0 +1,52 @@
+LiveCollab Correctness Test
+==========================================================
+Scenario: stale-concurrent-edit
+Stale-write policy: accept
+Result: FAILED
+
+Invariant
+----------------------------------------------------------
+A stale full-document update must not silently overwrite a newer acknowledged update.
+
+Controlled input
+----------------------------------------------------------
+Initial document: "Start"
+Alice update:    "Start [Alice]"
+Bob update:      "Start [Bob]"
+Bob's frame is held until Alice's update is acknowledged.
+
+Timeline
+----------------------------------------------------------
+  489 ms  Bob sent bob-op-001 from version 1
+  489 ms  Fault proxy held Bob's bob-op-001
+  492 ms  Alice sent alice-op-001 from version 1
+  494 ms  Server received alice-op-001 (base 1, current 1)
+  494 ms  Server applied alice-op-001 as version 2
+  494 ms  Server returned ACK for alice-op-001
+  496 ms  Bob observed alice-op-001 at version 2
+  498 ms  Alice received ACK for alice-op-001
+  498 ms  Alice observed alice-op-001 at version 2
+  501 ms  Fault proxy released Bob's delayed bob-op-001
+  503 ms  Server received bob-op-001 (base 1, current 2)
+  503 ms  Server applied bob-op-001 as version 3 — STALE WRITE ACCEPTED
+  503 ms  Server returned ACK for bob-op-001
+  506 ms  Bob received ACK for bob-op-001
+  507 ms  Alice observed bob-op-001 at version 3
+  507 ms  Bob observed bob-op-001 at version 3
+
+Final client state
+----------------------------------------------------------
+Alice v3   27867faf731a  "Start [Bob]"
+Bob   v3   27867faf731a  "Start [Bob]"
+
+INVARIANT VIOLATION
+----------------------------------------------------------
+bob-op-001 was authored from version 1, but the server was already at version 2.
+The stale write was accepted and Alice's acknowledged contribution disappeared.
+
+Suggested fix
+----------------------------------------------------------
+Reject updates whose baseVersion does not equal the current room version,
+then return the authoritative room snapshot so the client can resynchronize.
+
+Replay: node correctness-tests/run-phase1.js --replay artifacts/phase1/unsafe-accept/replay.json

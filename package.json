@@ -1,0 +1,43 @@
+{
+  "name": "livecollab",
+  "version": "3.0.0",
+  "description": "A fault-tolerant collaborative editor that dogfoods distributed correctness testing and production observability.",
+  "main": "index.js",
+  "scripts": {
+    "test": "npm run test:correctness",
+    "test:correctness": "npm run test:phase1 && npm run test:phase2",
+    "test:phase1": "node correctness-tests/run-phase1.js",
+    "test:phase1:bug": "node correctness-tests/run-phase1.js --policy accept --expect failed",
+    "test:phase1:fixed": "node correctness-tests/run-phase1.js --policy reject --expect passed",
+    "test:phase2": "node correctness-tests/run-phase2.js",
+    "test:phase2:redis": "node correctness-tests/run-phase2.js",
+    "replay:correctness": "node correctness-tests/run-phase1.js --replay",
+    "test:backend": "cd backend && go test -mod=vendor ./...",
+    "test:race": "cd backend && go test -race -mod=vendor ./...",
+    "verify": "npm run test:backend && npm run test:phase1 && npm run test:phase2",
+    "test:phase3:backend": "cd backend && go test -mod=vendor ./..."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/smritiig/LiveCollab.git"
+  },
+  "keywords": [
+    "websocket",
+    "distributed-systems",
+    "redis-streams",
+    "correctness-testing",
+    "golang"
+  ],
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/smritiig/LiveCollab/issues"
+  },
+  "homepage": "https://github.com/smritiig/LiveCollab#readme",
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

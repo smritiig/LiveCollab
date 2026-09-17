@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "scenario": "reconnect-replay-across-backend-restart",
+  "roomId": "fe0070",
+  "bobResumeFrom": 1,
+  "expectedReplay": [
+    2,
+    3,
+    4,
+    5
+  ],
+  "finalContent": "Start [2] [3] [4] [5]",
+  "operations": [
+    {
+      "operationId": "op-1",
+      "baseVersion": 0,
+      "expectedSequence": 1,
+      "content": "Start"
+    },
+    {
+      "operationId": "op-2",
+      "baseVersion": 1,
+      "expectedSequence": 2,
+      "content": "Start [2]"
+    },
+    {
+      "operationId": "op-3",
+      "baseVersion": 2,
+      "expectedSequence": 3,
+      "content": "Start [2] [3]"
+    },
+    {
+      "operationId": "op-4",
+      "baseVersion": 3,
+      "expectedSequence": 4,
+      "content": "Start [2] [3] [4]"
+    },
+    {
+      "operationId": "op-5",
+      "baseVersion": 4,
+      "expectedSequence": 5,
+      "content": "Start [2] [3] [4] [5]"
+    }
+  ]
+}

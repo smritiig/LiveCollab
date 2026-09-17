@@ -1,0 +1,5 @@
+.git
+artifacts
+frontend/node_modules
+node_modules
+*.zip
