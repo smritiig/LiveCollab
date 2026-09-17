@@ -125,16 +125,19 @@ func (m *RoomManager) ensureWatcher(room *Room) {
 		m.watchersMu.Unlock()
 		return
 	}
+	room.mu.RLock()
+	initialSequence := room.Sequence
+	room.mu.RUnlock()
 	m.watchers[room.ID] = struct{}{}
 	m.watchersMu.Unlock()
 
-	go m.watchRoom(room)
+	go m.watchRoom(room, initialSequence)
 }
 
-func (m *RoomManager) watchRoom(room *Room) {
-	// Start from the beginning and rely on the room sequence to de-duplicate
-	// historical events. Starting at the stream tail after hydrating a snapshot can
-	// miss an event written in the gap between those two operations.
+func (m *RoomManager) watchRoom(room *Room, initialSequence int64) {
+	// Skip only the state hydrated before this watcher started. Subsequent
+	// snapshot/ack updates must never suppress fan-out. The stream cursor, not
+	// room.Sequence, tracks delivery progress after this fixed startup boundary.
 	lastStreamID := "0-0"
 
 	for {
@@ -152,9 +155,10 @@ func (m *RoomManager) watchRoom(room *Room) {
 		}
 		for _, event := range events {
 			lastStreamID = event.StreamID
-			if !room.ApplyDistributedEvent(event) {
+			if event.Sequence <= initialSequence {
 				continue
 			}
+			room.ApplyDistributedEvent(event)
 			if m.telemetry != nil {
 				m.telemetry.Metrics.StreamEvent()
 				if lag, ok := streamLagSeconds(event.StreamID); ok {

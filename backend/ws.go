@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -40,6 +41,9 @@ func serveWS(manager *RoomManager, config Config, recorder *TraceRecorder, telem
 	}
 
 	client := &Client{Conn: conn, Username: username, RoomID: roomID, ClientID: clientID}
+	if room.Store != nil && lastSequence > 0 {
+		client.beginReplay(lastSequence)
+	}
 	telemetry.Metrics.WebSocketConnected()
 	if lastSequence > 0 {
 		telemetry.Metrics.ReconnectStarted()
@@ -119,35 +123,24 @@ func resumeClient(room *Room, client *Client, lastSequence int64, config Config,
 	started := time.Now()
 	traceID := NewTraceID()
 	spanID := NewSpanID()
-	snapshot := room.GetSnapshot()
+	boundary, err := room.Store.ReplayBoundary(room.ID)
+	if err != nil {
+		return err
+	}
+	if lastSequence > boundary.Sequence {
+		return fmt.Errorf("resume cursor %d exceeds boundary %d", lastSequence, boundary.Sequence)
+	}
 	if err := client.WriteJSON(Message{
 		Type:           "resume_started",
 		FromSequence:   lastSequence,
-		LatestSequence: snapshot.Sequence,
-		ServerVersion:  snapshot.Version,
+		LatestSequence: boundary.Sequence,
+		ServerVersion:  boundary.Version,
 	}); err != nil {
 		return err
 	}
 
-	events, err := room.Store.EventsAfterSequence(room.ID, lastSequence)
-	if err != nil {
-		return err
-	}
-
 	replayed := 0
-	expected := lastSequence + 1
-	for _, event := range events {
-		if event.Sequence != expected {
-			telemetry.Metrics.SequenceGap()
-			recorder.Record(TraceEvent{
-				Stage:         "resume_gap_detected",
-				InstanceID:    config.InstanceID,
-				RoomID:        room.ID,
-				ClientID:      client.ClientID,
-				EventSequence: event.Sequence,
-				Reason:        fmt.Sprintf("expected_sequence_%d", expected),
-			})
-		}
+	err = room.Store.EventsAfterSequence(room.ID, lastSequence, boundary, func(event DistributedEvent) error {
 		if err := client.WriteJSON(messageFromDistributedEvent(event)); err != nil {
 			return err
 		}
@@ -162,16 +155,23 @@ func resumeClient(room *Room, client *Client, lastSequence int64, config Config,
 			ServerVersion: event.Version,
 			Content:       event.Content,
 		})
-		expected = event.Sequence + 1
 		replayed++
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, errReplayGap) {
+			telemetry.Metrics.SequenceGap()
+			recorder.Record(TraceEvent{Stage: "resume_gap_detected", InstanceID: config.InstanceID,
+				RoomID: room.ID, ClientID: client.ClientID, EventSequence: lastSequence + int64(replayed) + 1, Reason: err.Error()})
+		}
+		return err
 	}
 
-	finalSnapshot := room.GetSnapshot()
-	if err := client.WriteJSON(Message{
+	if err := client.finishReplay(Message{
 		Type:           "resume_complete",
 		FromSequence:   lastSequence,
-		LatestSequence: finalSnapshot.Sequence,
-		ServerVersion:  finalSnapshot.Version,
+		LatestSequence: boundary.Sequence,
+		ServerVersion:  boundary.Version,
 		Replayed:       replayed,
 	}); err != nil {
 		return err
@@ -180,8 +180,8 @@ func resumeClient(room *Room, client *Client, lastSequence int64, config Config,
 	telemetry.Metrics.ResumeSucceeded()
 	telemetry.Metrics.ReplayedEvents(replayed)
 	telemetry.Metrics.ObserveResume(time.Since(started).Seconds())
-	telemetry.Logger.Event("info", "resume_complete", map[string]any{"traceId": traceID, "roomId": room.ID, "clientId": client.ClientID, "fromSequence": lastSequence, "latestSequence": finalSnapshot.Sequence, "replayed": replayed, "durationMs": time.Since(started).Seconds() * 1000})
-	telemetry.Tracer.Export(Span{TraceID: traceID, SpanID: spanID, Name: "livecollab.websocket.resume", Start: started, End: time.Now(), Attributes: map[string]any{"room.id": room.ID, "client.id": client.ClientID, "resume.from_sequence": lastSequence, "resume.latest_sequence": finalSnapshot.Sequence, "resume.replayed": replayed}})
+	telemetry.Logger.Event("info", "resume_complete", map[string]any{"traceId": traceID, "roomId": room.ID, "clientId": client.ClientID, "fromSequence": lastSequence, "latestSequence": boundary.Sequence, "replayed": replayed, "durationMs": time.Since(started).Seconds() * 1000})
+	telemetry.Tracer.Export(Span{TraceID: traceID, SpanID: spanID, Name: "livecollab.websocket.resume", Start: started, End: time.Now(), Attributes: map[string]any{"room.id": room.ID, "client.id": client.ClientID, "resume.from_sequence": lastSequence, "resume.latest_sequence": boundary.Sequence, "resume.replayed": replayed}})
 	recorder.Record(TraceEvent{
 		Stage:         "resume_complete",
 		TraceID:       traceID,
@@ -190,8 +190,8 @@ func resumeClient(room *Room, client *Client, lastSequence int64, config Config,
 		InstanceID:    config.InstanceID,
 		RoomID:        room.ID,
 		ClientID:      client.ClientID,
-		EventSequence: finalSnapshot.Sequence,
-		ServerVersion: finalSnapshot.Version,
+		EventSequence: boundary.Sequence,
+		ServerVersion: boundary.Version,
 		Reason:        fmt.Sprintf("replayed_%d", replayed),
 	})
 	return nil
@@ -345,6 +345,11 @@ func handleContentUpdate(room *Room, client *Client, incoming Message, config Co
 			Sequence:      result.Sequence,
 			Reason:        "resync_after_conflict",
 		})
+		return
+	}
+
+	// Redis Streams are the sole producer of distributed content fan-out.
+	if room.Store != nil {
 		return
 	}
 

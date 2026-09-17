@@ -71,7 +71,13 @@ func (r *Room) BroadcastJSON(message Message) {
 		if client.Conn == nil {
 			continue
 		}
-		if err := client.WriteJSON(message); err != nil {
+		var err error
+		if r.Store != nil && message.Type == "content_update" {
+			err = client.writeContentUpdate(message)
+		} else {
+			err = client.WriteJSON(message)
+		}
+		if err != nil {
 			fmt.Println("broadcast error:", err)
 		}
 	}

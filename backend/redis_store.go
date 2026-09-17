@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -233,18 +234,25 @@ func (s *RedisStore) ApplyContentUpdate(roomID, content string, baseVersion int6
 }
 
 func (s *RedisStore) LatestStreamID(roomID string) (string, error) {
+	boundary, err := s.ReplayBoundary(roomID)
+	return boundary.StreamID, err
+}
+
+// The final entry supplies a matching sequence, version and stream ID from one
+// Redis command. Commits append the entry atomically with room state.
+func (s *RedisStore) ReplayBoundary(roomID string) (DistributedEvent, error) {
 	raw, err := s.do("XREVRANGE", roomStreamKey(roomID), "+", "-", "COUNT", "1")
 	if err != nil {
-		return "", err
+		return DistributedEvent{}, err
 	}
 	events, err := parseStreamEntries(raw)
 	if err != nil {
-		return "", err
+		return DistributedEvent{}, err
 	}
 	if len(events) == 0 {
-		return "0-0", nil
+		return DistributedEvent{StreamID: "0-0"}, nil
 	}
-	return events[0].StreamID, nil
+	return events[0], nil
 }
 
 func (s *RedisStore) ReadAfterStreamID(roomID, lastStreamID string, blockMs int) ([]DistributedEvent, error) {
@@ -269,22 +277,42 @@ func (s *RedisStore) ReadAfterStreamID(roomID, lastStreamID string, blockMs int)
 	return parseStreamEntries(streamTuple[1])
 }
 
-func (s *RedisStore) EventsAfterSequence(roomID string, lastSequence int64) ([]DistributedEvent, error) {
-	raw, err := s.do("XRANGE", roomStreamKey(roomID), "-", "+", "COUNT", "1000")
-	if err != nil {
-		return nil, err
+var errReplayGap = errors.New("replay sequence gap")
+
+func (s *RedisStore) EventsAfterSequence(roomID string, lastSequence int64, boundary DistributedEvent, visit func(DistributedEvent) error) error {
+	if lastSequence > boundary.Sequence {
+		return fmt.Errorf("resume cursor %d exceeds boundary %d", lastSequence, boundary.Sequence)
 	}
-	events, err := parseStreamEntries(raw)
-	if err != nil {
-		return nil, err
-	}
-	filtered := make([]DistributedEvent, 0, len(events))
-	for _, event := range events {
-		if event.Sequence > lastSequence {
-			filtered = append(filtered, event)
+	expected := lastSequence + 1
+	start := "-"
+	for expected <= boundary.Sequence {
+		raw, err := s.do("XRANGE", roomStreamKey(roomID), start, boundary.StreamID, "COUNT", "1000")
+		if err != nil {
+			return err
 		}
+		events, err := parseStreamEntries(raw)
+		if err != nil {
+			return err
+		}
+		if len(events) == 0 {
+			return fmt.Errorf("%w: ended before sequence %d (boundary %d)", errReplayGap, expected, boundary.Sequence)
+		}
+		for _, event := range events {
+			if event.Sequence <= lastSequence {
+				continue
+			}
+			if event.Sequence != expected || event.Sequence > boundary.Sequence {
+				return fmt.Errorf("%w: expected sequence %d, received %d", errReplayGap, expected, event.Sequence)
+			}
+			if err := visit(event); err != nil {
+				return err
+			}
+			expected++
+		}
+		// Page by exclusive stream ID, not by application sequence.
+		start = "(" + events[len(events)-1].StreamID
 	}
-	return filtered, nil
+	return nil
 }
 
 func parseStreamEntries(raw any) ([]DistributedEvent, error) {

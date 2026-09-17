@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sort"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -12,6 +13,62 @@ type Client struct {
 	RoomID   string
 	ClientID string
 	writeMu  sync.Mutex
+
+	// deliveryMu serializes live content delivery and the replay/live handoff.
+	// Historical writes use writeMu only, so live events can buffer during replay.
+	deliveryMu   sync.Mutex
+	replaying    bool
+	lastSequence int64
+	pending      map[int64]Message
+}
+
+// beginReplay must be called before the client is registered with its room.
+func (c *Client) beginReplay(lastSequence int64) {
+	c.replaying = true
+	c.lastSequence = lastSequence
+	c.pending = make(map[int64]Message)
+}
+
+func (c *Client) writeContentUpdate(message Message) error {
+	c.deliveryMu.Lock()
+	defer c.deliveryMu.Unlock()
+	if message.Sequence <= c.lastSequence {
+		return nil
+	}
+	if c.replaying {
+		c.pending[message.Sequence] = message
+		return nil
+	}
+	if err := c.WriteJSON(message); err != nil {
+		return err
+	}
+	c.lastSequence = message.Sequence
+	return nil
+}
+
+func (c *Client) finishReplay(complete Message) error {
+	c.deliveryMu.Lock()
+	defer c.deliveryMu.Unlock()
+	if err := c.WriteJSON(complete); err != nil {
+		return err
+	}
+	c.lastSequence = complete.LatestSequence
+	sequences := make([]int64, 0, len(c.pending))
+	for sequence := range c.pending {
+		if sequence > c.lastSequence {
+			sequences = append(sequences, sequence)
+		}
+	}
+	sort.Slice(sequences, func(i, j int) bool { return sequences[i] < sequences[j] })
+	for _, sequence := range sequences {
+		if err := c.WriteJSON(c.pending[sequence]); err != nil {
+			return err
+		}
+		c.lastSequence = sequence
+	}
+	c.pending = nil
+	c.replaying = false
+	return nil
 }
 
 func (c *Client) WriteJSON(v interface{}) error {
