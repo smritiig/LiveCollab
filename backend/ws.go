@@ -62,12 +62,15 @@ func serveWS(manager *RoomManager, config Config, recorder *TraceRecorder, telem
 		EventSequence: lastSequence,
 	})
 
+	stopHeartbeat := func() {}
+	var notePresenceActivity func() error
 	defer func() {
+		stopHeartbeat()
 		telemetry.Metrics.WebSocketDisconnected()
 		telemetry.Logger.Event("info", "websocket_disconnected", map[string]any{"roomId": roomID, "clientId": clientID})
 		room.RemoveClient(client)
 		if room.Store != nil {
-			// Best-effort graceful removal only. Patch 2 will address crash expiry.
+			// If graceful removal fails, the unrenewed lease is pruned later.
 			if err := room.Store.LeavePresence(room.ID, client.ConnectionID); err != nil {
 				telemetry.Logger.Event("error", "presence_leave_failed", map[string]any{"roomId": room.ID, "connectionId": client.ConnectionID, "error": err.Error()})
 			}
@@ -88,12 +91,13 @@ func serveWS(manager *RoomManager, config Config, recorder *TraceRecorder, telem
 
 	room.AddClient(client)
 	if room.Store != nil {
-		if err := room.Store.JoinPresence(room.ID, client.participant()); err != nil {
+		if err := room.Store.JoinPresence(room.ID, client.participant(), manager.presenceTiming.LeaseDuration); err != nil {
 			telemetry.Logger.Event("error", "presence_join_failed", map[string]any{"roomId": room.ID, "connectionId": client.ConnectionID, "error": err.Error()})
 			_ = client.WriteJSON(Message{Type: "error", Reason: "presence_unavailable"})
 			return
 		}
 		manager.ensurePresenceWatcher(room)
+		notePresenceActivity, stopHeartbeat = manager.startPresenceHeartbeat(client)
 	} else {
 		room.BroadcastPresence()
 	}
@@ -132,6 +136,12 @@ func serveWS(manager *RoomManager, config Config, recorder *TraceRecorder, telem
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			break
+		}
+
+		if notePresenceActivity != nil {
+			if err := notePresenceActivity(); err != nil {
+				break
+			}
 		}
 
 		var incoming Message

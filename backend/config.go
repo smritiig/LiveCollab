@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type StaleWritePolicy string
@@ -25,6 +26,7 @@ type Config struct {
 	JSONLogs          bool
 	EnableDebugFaults bool
 	RedisDelayMs      int64
+	Presence          PresenceTiming
 }
 
 func LoadConfig() Config {
@@ -69,6 +71,11 @@ func LoadConfig() Config {
 		JSONLogs:          envBool("LIVECOLLAB_JSON_LOGS", true),
 		EnableDebugFaults: envBool("LIVECOLLAB_ENABLE_DEBUG_FAULTS", false),
 		RedisDelayMs:      envInt64("LIVECOLLAB_REDIS_DELAY_MS", 0),
+		Presence: (PresenceTiming{
+			HeartbeatInterval: time.Duration(envInt64("LIVECOLLAB_PRESENCE_HEARTBEAT_MS", 10000)) * time.Millisecond,
+			LeaseDuration:     time.Duration(envInt64("LIVECOLLAB_PRESENCE_LEASE_MS", 30000)) * time.Millisecond,
+			SweepInterval:     time.Duration(envInt64("LIVECOLLAB_PRESENCE_SWEEP_MS", 5000)) * time.Millisecond,
+		}).withDefaults(),
 	}
 }
 

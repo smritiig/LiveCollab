@@ -34,7 +34,7 @@ func main() {
 		if err := waitForRedis(store, 10*time.Second); err != nil {
 			log.Fatalf("connect Redis at %s: %v", config.RedisAddr, err)
 		}
-		manager = NewDistributedRoomManager(store, config.InstanceID, recorder, telemetry)
+		manager = NewDistributedRoomManager(store, config.InstanceID, recorder, telemetry, config.Presence)
 		mode = "redis-streams"
 	}
 	defer manager.Close()

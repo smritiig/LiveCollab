@@ -20,6 +20,7 @@ type RoomManager struct {
 	watchersMu       sync.Mutex
 	watchers         map[string]struct{}
 	presenceWatchers map[string]struct{}
+	presenceTiming   PresenceTiming
 	mu               sync.RWMutex
 }
 
@@ -33,12 +34,19 @@ func NewRoomManager() *RoomManager {
 	}
 }
 
-func NewDistributedRoomManager(store *RedisStore, instanceID string, recorder *TraceRecorder, telemetry *Telemetry) *RoomManager {
+func NewDistributedRoomManager(store *RedisStore, instanceID string, recorder *TraceRecorder, telemetry *Telemetry, timing ...PresenceTiming) *RoomManager {
 	manager := NewRoomManager()
 	manager.store = store
 	manager.instanceID = instanceID
 	manager.recorder = recorder
 	manager.telemetry = telemetry
+	manager.presenceTiming = (PresenceTiming{}).withDefaults()
+	if len(timing) > 0 {
+		manager.presenceTiming = timing[0].withDefaults()
+	}
+	if store != nil {
+		go manager.runPresenceSweeper()
+	}
 	return manager
 }
 

@@ -8,6 +8,7 @@ const host = process.env.LIVECOLLAB_TEST_REDIS_HOST || "127.0.0.1";
 const strings = new Map();
 const streams = new Map();
 const presence = new Map();
+const expiries = new Map();
 let lastMs = 0;
 let sameMsCounter = 0;
 
@@ -83,6 +84,8 @@ async function handleCommand(args) {
   if (!args.length) return { error: "ERR empty command" };
   const command = args[0].toUpperCase();
 
+  if (command === "SCAN") return ["0", [...presence.keys()].filter(key => presence.get(key).size)];
+
   if (command === "PING") return { simple: "PONG" };
 
   if (command === "GET") {
@@ -153,27 +156,41 @@ async function handleCommand(args) {
     const keys = args.slice(3, 3 + numberOfKeys);
     const argv = args.slice(3 + numberOfKeys);
 
-    // Patch 1 presence scripts: atomic registry/revision/notification changes.
-    // Deliberately no crash expiry; that belongs to Patch 2.
+    // Presence lease scripts use this Redis fixture's server clock.
     if (args[1].includes("livecollab_presence_")) {
       if (!presence.has(keys[0])) presence.set(keys[0], new Map());
-      const records = presence.get(keys[0]);
-      const revision = Number(strings.get(keys[1]) || "0");
-      if (args[1].includes("livecollab_presence_snapshot")) {
-        return [revision, [...records.values()]];
+      if (!expiries.has(keys[0])) expiries.set(keys[0], new Map());
+      const records = presence.get(keys[0]), expiry = expiries.get(keys[0]);
+      let revision = Number(strings.get(keys[1]) || "0");
+      const now = Date.now(), connectionId = argv[0];
+      const notify = () => {
+        revision++;
+        strings.set(keys[1], String(revision));
+        entriesFor(keys[2]).push({ id: nextStreamId(), fields: { revision: String(revision) } });
+      };
+      if (args[1].includes("livecollab_presence_snapshot") || args[1].includes("livecollab_presence_prune")) {
+        let removed = 0;
+        for (const id of records.keys()) {
+          if (!expiry.has(id) || expiry.get(id) <= now) { records.delete(id); expiry.delete(id); removed++; }
+        }
+        for (const [id, deadline] of expiry) if (deadline <= now) expiry.delete(id);
+        if (removed) notify();
+        return args[1].includes("livecollab_presence_snapshot") ? [revision, [...records.values()]] : removed;
       }
-      const connectionId = argv[0];
+      if (args[1].includes("livecollab_presence_renew")) {
+        if (!records.has(connectionId) || !expiry.has(connectionId) || expiry.get(connectionId) <= now) return 0;
+        expiry.set(connectionId, Math.max(expiry.get(connectionId), now + Number(argv[1])));
+        return 1;
+      }
       if (args[1].includes("livecollab_presence_join")) {
         if (records.has(connectionId)) return revision;
-        records.set(connectionId, argv[1]);
+        records.set(connectionId, argv[1]); expiry.set(connectionId, now + Number(argv[2]));
       } else if (args[1].includes("livecollab_presence_leave")) {
+        expiry.delete(connectionId);
         if (!records.delete(connectionId)) return revision;
-      } else {
-        return { error: "ERR unknown presence script" };
-      }
-      strings.set(keys[1], String(revision + 1));
-      entriesFor(keys[2]).push({ id: nextStreamId(), fields: { revision: String(revision + 1) } });
-      return revision + 1;
+      } else return { error: "ERR unknown presence script" };
+      notify();
+      return revision;
     }
 
     // Create-room script: four keys and no ARGV.

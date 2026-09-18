@@ -58,35 +58,89 @@ func (f *replayRedis) presenceCommand(a []string) any {
 	if f.presenceChanged == nil {
 		f.presenceChanged = make(chan struct{})
 	}
+	if a[0] == "SCAN" {
+		keys := []any{}
+		for key, records := range f.presenceRecords {
+			if len(records) > 0 {
+				keys = append(keys, key)
+			}
+		}
+		return []any{"0", keys}
+	}
 	key := a[3]
 	if f.presenceRecords[key] == nil {
-		f.presenceRecords[key] = make(map[string]string)
+		f.presenceRecords[key] = map[string]string{}
 	}
-	records := f.presenceRecords[key]
+	if f.presenceExpiry == nil {
+		f.presenceExpiry = map[string]map[string]int64{}
+	}
+	if f.presenceExpiry[key] == nil {
+		f.presenceExpiry[key] = map[string]int64{}
+	}
+	records, expiry := f.presenceRecords[key], f.presenceExpiry[key]
 	revision := f.presenceRevisions[key]
+	notify := func() { f.presenceRevisions[key]++; close(f.presenceChanged); f.presenceChanged = make(chan struct{}) }
 	switch a[1] {
-	case presenceSnapshotScript:
+	case presenceSnapshotScript, prunePresenceScript:
+		removed := int64(0)
+		for id := range records {
+			if expiry[id] <= f.presenceNow {
+				delete(records, id)
+				delete(expiry, id)
+				removed++
+			}
+		}
+		for id, deadline := range expiry {
+			if deadline <= f.presenceNow {
+				delete(expiry, id)
+			}
+		}
+		if removed > 0 {
+			notify()
+		}
+		if a[1] == prunePresenceScript {
+			return removed
+		}
 		values := []any{}
 		for _, record := range records {
 			values = append(values, record)
 		}
-		return []any{revision, values}
+		return []any{f.presenceRevisions[key], values}
+	case renewPresenceScript:
+		id := a[7]
+		if _, ok := records[id]; !ok || expiry[id] <= f.presenceNow {
+			return int64(0)
+		}
+		duration, _ := strconv.ParseInt(a[8], 10, 64)
+		if next := f.presenceNow + duration; next > expiry[id] {
+			expiry[id] = next
+		}
+		if f.presenceRenewed != nil {
+			select {
+			case f.presenceRenewed <- struct{}{}:
+			default:
+			}
+		}
+		return int64(1)
 	case joinPresenceScript:
-		if _, exists := records[a[6]]; exists {
+		id := a[7]
+		if _, exists := records[id]; exists {
 			return revision
 		}
-		records[a[6]] = a[7]
+		records[id] = a[8]
+		duration, _ := strconv.ParseInt(a[9], 10, 64)
+		expiry[id] = f.presenceNow + duration
 	case leavePresenceScript:
-		if _, exists := records[a[6]]; !exists {
+		id := a[7]
+		delete(expiry, id)
+		if _, exists := records[id]; !exists {
 			return revision
 		}
-		delete(records, a[6])
+		delete(records, id)
 	default:
 		return fmt.Errorf("unknown presence script")
 	}
-	f.presenceRevisions[key]++
-	close(f.presenceChanged)
-	f.presenceChanged = make(chan struct{})
+	notify()
 	return revision + 1
 }
 
@@ -108,7 +162,7 @@ func presenceTestStore(t *testing.T) (*RedisStore, string) {
 	}
 	// Only delete keys belonging to this randomly generated test room.
 	t.Cleanup(func() {
-		_, err := store.do("DEL", roomExistsKey(roomID), roomContentKey(roomID), roomVersionKey(roomID), roomSequenceKey(roomID), roomStreamKey(roomID), roomPresenceKey(roomID), roomPresenceRevisionKey(roomID), roomPresenceStreamKey(roomID))
+		_, err := store.do("DEL", roomExistsKey(roomID), roomContentKey(roomID), roomVersionKey(roomID), roomSequenceKey(roomID), roomStreamKey(roomID), roomPresenceKey(roomID), roomPresenceRevisionKey(roomID), roomPresenceStreamKey(roomID), roomPresenceExpiryKey(roomID))
 		if err != nil {
 			t.Errorf("clean test room: %v", err)
 		}
@@ -121,11 +175,11 @@ type presenceBackend struct {
 	server  *httptest.Server
 }
 
-func newPresenceBackend(t *testing.T, store *RedisStore, instance string) *presenceBackend {
+func newPresenceBackend(t *testing.T, store *RedisStore, instance string, timing ...PresenceTiming) *presenceBackend {
 	t.Helper()
 	config := Config{InstanceID: instance, StaleWritePolicy: StaleWriteReject}
 	telemetry := NewTelemetry(config)
-	manager := NewDistributedRoomManager(store, instance, nil, telemetry)
+	manager := NewDistributedRoomManager(store, instance, nil, telemetry, timing...)
 	var handlers sync.WaitGroup
 	handler := NewApplication(manager, config, nil, telemetry).Handler()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

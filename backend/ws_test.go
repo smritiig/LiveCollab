@@ -26,6 +26,9 @@ type replayRedis struct {
 	presenceRecords   map[string]map[string]string
 	presenceRevisions map[string]int64
 	presenceChanged   chan struct{}
+	presenceExpiry    map[string]map[string]int64
+	presenceNow       int64
+	presenceRenewed   chan struct{}
 
 	mu             sync.Mutex
 	events         []DistributedEvent
@@ -121,7 +124,7 @@ func (f *replayRedis) signal(ch chan int64, n int64) {
 }
 
 func (f *replayRedis) command(a []string, observe bool) any {
-	if (a[0] == "EVAL" && strings.Contains(a[1], "livecollab_presence_")) ||
+	if a[0] == "SCAN" || (a[0] == "EVAL" && strings.Contains(a[1], "livecollab_presence_")) ||
 		(a[0] == "XREAD" && strings.HasSuffix(a[len(a)-2], ":presence-events")) {
 		return f.presenceCommand(a)
 	}
