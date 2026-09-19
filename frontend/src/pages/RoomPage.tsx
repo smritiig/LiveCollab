@@ -9,6 +9,7 @@ function createClientId(username: string | null) {
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
   return `${username || "anonymous"}-${suffix}`;
 }
 
@@ -35,22 +36,39 @@ function RoomPage() {
   const [lastSequence, setLastSequence] = useState(0);
   const [copied, setCopied] = useState(false);
   const [lastUpdatedBy, setLastUpdatedBy] = useState<string | null>(null);
-  const [lastOperationStatus, setLastOperationStatus] = useState<string | null>(null);
+  const [lastOperationStatus, setLastOperationStatus] = useState<string | null>(
+    null
+  );
   const [typingUser, setTypingUser] = useState<string | null>(null);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
   const shareLink = useMemo(() => {
     if (!roomId) return "";
     return `${window.location.origin}/room/${roomId}`;
   }, [roomId]);
 
+  const connectionState = useMemo(() => {
+    if (status.includes("Connected") || status.includes("Synchronized")) {
+      return "connected";
+    }
+
+    if (status.includes("interrupted") || status.includes("Event gap")) {
+      return "warning";
+    }
+
+    return "connecting";
+  }, [status]);
+
   const updateServerVersion = (nextVersion: unknown) => {
     if (typeof nextVersion !== "number") return;
+
     serverVersionRef.current = nextVersion;
     setServerVersion(nextVersion);
   };
 
   const updateSequence = (nextSequence: unknown) => {
     if (typeof nextSequence !== "number") return;
+
     lastSequenceRef.current = nextSequence;
     setLastSequence(nextSequence);
   };
@@ -60,8 +78,10 @@ function RoomPage() {
 
     const storageKey = `livecollab:${roomId}:${username}:clientId`;
     const storedClientId = window.sessionStorage.getItem(storageKey);
+
     clientIdRef.current = storedClientId || createClientId(username);
     window.sessionStorage.setItem(storageKey, clientIdRef.current);
+
     operationCounterRef.current = 0;
 
     let disposed = false;
@@ -77,9 +97,18 @@ function RoomPage() {
         clientId: clientIdRef.current,
         lastSequence: String(lastSequenceRef.current),
       });
-      const ws = new WebSocket(`${WEBSOCKET_BASE_URL}/ws?${query.toString()}`);
+
+      const ws = new WebSocket(
+        `${WEBSOCKET_BASE_URL}/ws?${query.toString()}`
+      );
+
       socketRef.current = ws;
-      setStatus(reconnectAttempt === 0 ? "🟡 Connecting..." : "🟡 Reconnecting...");
+
+      setStatus(
+        reconnectAttempt === 0
+          ? "🟡 Connecting..."
+          : "🟡 Reconnecting..."
+      );
 
       ws.onopen = () => {
         reconnectAttempt = 0;
@@ -88,11 +117,21 @@ function RoomPage() {
 
       ws.onclose = () => {
         if (disposed || socketRef.current !== ws) return;
+
         socketRef.current = null;
         setStatus("🟡 Reconnecting...");
-        const delayMs = Math.min(300 * 2 ** reconnectAttempt, 3000);
+
+        const delayMs = Math.min(
+          300 * 2 ** reconnectAttempt,
+          3000
+        );
+
         reconnectAttempt += 1;
-        reconnectTimeoutRef.current = window.setTimeout(connect, delayMs);
+
+        reconnectTimeoutRef.current = window.setTimeout(
+          connect,
+          delayMs
+        );
       };
 
       ws.onerror = () => {
@@ -114,80 +153,120 @@ function RoomPage() {
 
             case "presence_update": {
               if (disposed || socketRef.current !== ws) break;
+
               const next = applyPresenceMessage(presence, data);
+
               if (next !== presence) {
                 presence = next;
                 setUsers(next.participants);
               }
+
               break;
             }
 
             case "content_update": {
               const incomingSequence =
-                typeof data.sequence === "number" ? data.sequence : null;
+                typeof data.sequence === "number"
+                  ? data.sequence
+                  : null;
+
               if (
                 incomingSequence !== null &&
                 incomingSequence <= lastSequenceRef.current
               ) {
                 break;
               }
+
               if (
                 incomingSequence !== null &&
                 lastSequenceRef.current > 0 &&
                 incomingSequence > lastSequenceRef.current + 1
               ) {
                 setStatus(
-                  `🟠 Event gap: expected ${lastSequenceRef.current + 1}, received ${incomingSequence}`
+                  `🟠 Event gap: expected ${
+                    lastSequenceRef.current + 1
+                  }, received ${incomingSequence}`
                 );
               }
+
               setContent(data.content || "");
               updateServerVersion(data.serverVersion);
-              if (incomingSequence !== null) updateSequence(incomingSequence);
-              if (data.username) setLastUpdatedBy(data.username);
+
+              if (incomingSequence !== null) {
+                updateSequence(incomingSequence);
+              }
+
+              if (data.username) {
+                setLastUpdatedBy(data.username);
+              }
+
               break;
             }
 
             case "operation_result":
               updateServerVersion(data.serverVersion);
+
               if (data.accepted === false) {
                 setLastOperationStatus(
-                  `Conflict detected (${data.reason || "operation rejected"})`
+                  `Conflict detected (${
+                    data.reason || "operation rejected"
+                  })`
                 );
               } else if (data.accepted === true) {
                 setLastOperationStatus(
                   `Saved as version ${data.serverVersion} · event ${data.sequence}`
                 );
               }
+
               break;
 
             case "resume_started":
               setStatus(
-                `🟡 Restoring events after ${data.fromSequence ?? lastSequenceRef.current}...`
+                `🟡 Restoring events after ${
+                  data.fromSequence ?? lastSequenceRef.current
+                }...`
               );
               break;
 
             case "resume_complete":
               updateServerVersion(data.serverVersion);
+
               if (typeof data.latestSequence === "number") {
                 updateSequence(data.latestSequence);
               }
-              setStatus(`🟢 Synchronized · replayed ${data.replayed ?? 0} events`);
+
+              setStatus(
+                `🟢 Synchronized · replayed ${
+                  data.replayed ?? 0
+                } events`
+              );
               break;
 
             case "typing":
-              if (data.username && data.username !== username) {
+              if (
+                data.username &&
+                data.username !== username
+              ) {
                 setTypingUser(data.username);
+
                 if (typingTimeoutRef.current) {
-                  window.clearTimeout(typingTimeoutRef.current);
+                  window.clearTimeout(
+                    typingTimeoutRef.current
+                  );
                 }
-                typingTimeoutRef.current = window.setTimeout(() => {
-                  setTypingUser(null);
-                }, 1200);
+
+                typingTimeoutRef.current =
+                  window.setTimeout(() => {
+                    setTypingUser(null);
+                  }, 1200);
               }
+
               break;
 
             case "error":
-              setLastOperationStatus(`Server error: ${data.reason || "unknown"}`);
+              setLastOperationStatus(
+                `Server error: ${data.reason || "unknown"}`
+              );
               break;
 
             default:
@@ -203,9 +282,19 @@ function RoomPage() {
 
     return () => {
       disposed = true;
-      if (debounceTimeoutRef.current) window.clearTimeout(debounceTimeoutRef.current);
-      if (typingTimeoutRef.current) window.clearTimeout(typingTimeoutRef.current);
-      if (reconnectTimeoutRef.current) window.clearTimeout(reconnectTimeoutRef.current);
+
+      if (debounceTimeoutRef.current) {
+        window.clearTimeout(debounceTimeoutRef.current);
+      }
+
+      if (typingTimeoutRef.current) {
+        window.clearTimeout(typingTimeoutRef.current);
+      }
+
+      if (reconnectTimeoutRef.current) {
+        window.clearTimeout(reconnectTimeoutRef.current);
+      }
+
       const socket = socketRef.current;
       socketRef.current = null;
       socket?.close();
@@ -214,10 +303,15 @@ function RoomPage() {
 
   const handleCopyLink = async () => {
     if (!shareLink) return;
+
     try {
       await navigator.clipboard.writeText(shareLink);
+
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
+
+      window.setTimeout(() => {
+        setCopied(false);
+      }, 1500);
     } catch (error) {
       console.error("Copy failed:", error);
       alert("Could not copy link.");
@@ -229,15 +323,26 @@ function RoomPage() {
       alert("Please enter a username.");
       return;
     }
-    navigate(`/room/${roomId}?username=${encodeURIComponent(pendingUsername)}`);
+
+    navigate(
+      `/room/${roomId}?username=${encodeURIComponent(
+        pendingUsername.trim()
+      )}`
+    );
   };
 
   const handleContentChange = (newContent: string) => {
     setContent(newContent);
     setLastUpdatedBy(username || null);
 
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ type: "typing" }));
+    if (
+      socketRef.current?.readyState === WebSocket.OPEN
+    ) {
+      socketRef.current.send(
+        JSON.stringify({
+          type: "typing",
+        })
+      );
     }
 
     if (debounceTimeoutRef.current) {
@@ -245,42 +350,95 @@ function RoomPage() {
     }
 
     const baseVersion = serverVersionRef.current;
-    const operationId = `${clientIdRef.current}:${++operationCounterRef.current}`;
 
-    debounceTimeoutRef.current = window.setTimeout(() => {
-      if (socketRef.current?.readyState === WebSocket.OPEN) {
-        socketRef.current.send(
-          JSON.stringify({
-            type: "content_update",
-            operationId,
-            clientId: clientIdRef.current,
-            baseVersion,
-            content: newContent,
-          })
-        );
-      } else {
-        setLastOperationStatus("Edit not sent while disconnected; retry after synchronization.");
-      }
-    }, 250);
+    const operationId =
+      `${clientIdRef.current}:` +
+      `${++operationCounterRef.current}`;
+
+    debounceTimeoutRef.current =
+      window.setTimeout(() => {
+        if (
+          socketRef.current?.readyState ===
+          WebSocket.OPEN
+        ) {
+          socketRef.current.send(
+            JSON.stringify({
+              type: "content_update",
+              operationId,
+              clientId: clientIdRef.current,
+              baseVersion,
+              content: newContent,
+            })
+          );
+        } else {
+          setLastOperationStatus(
+            "Edit not sent while disconnected; retry after synchronization."
+          );
+        }
+      }, 250);
   };
 
   if (!username) {
     return (
-      <div className="home-page">
-        <div className="home-card">
-          <h1>Join Room</h1>
-          <p>
-            Enter your name to join room <strong>{roomId}</strong>.
-          </p>
+      <div className="join-page">
+        <div className="join-card">
+          <div className="join-brand">
+            <div className="join-brand-mark">LC</div>
+
+            <div>
+              <strong>LiveCollab</strong>
+              <span>Distributed collaboration</span>
+            </div>
+          </div>
+
+          <div className="join-heading">
+            <div className="join-eyebrow">
+              You were invited to a room
+            </div>
+
+            <h1>Join collaboration</h1>
+
+            <p>
+              Enter your name to join room{" "}
+              <strong>{roomId}</strong>.
+            </p>
+          </div>
+
+          <label
+            className="join-label"
+            htmlFor="join-username"
+          >
+            Display name
+          </label>
+
           <input
+            id="join-username"
+            className="join-input"
             type="text"
-            placeholder="Enter your username"
+            placeholder="e.g. Smriti"
             value={pendingUsername}
-            onChange={(e) => setPendingUsername(e.target.value)}
+            onChange={(e) =>
+              setPendingUsername(e.target.value)
+            }
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                handleJoinWithUsername();
+              }
+            }}
           />
-          <button onClick={handleJoinWithUsername} style={{ width: "100%" }}>
-            Join Room
+
+          <button
+            className="join-button"
+            onClick={handleJoinWithUsername}
+          >
+            Join room
           </button>
+
+          <div className="join-footer">
+            <span>Real-time WebSockets</span>
+            <span>Redis Streams</span>
+            <span>Ordered replay</span>
+          </div>
         </div>
       </div>
     );
@@ -288,79 +446,248 @@ function RoomPage() {
 
   return (
     <div className="room-page">
-      <div className="room-header">
+      <header className="room-header">
         <div className="room-header-left">
-          <h2>LiveCollab</h2>
-          <p>
-            Room: <strong>{roomId}</strong>
-          </p>
-          <p>
-            You joined as <strong>{username}</strong>
-          </p>
+          <div className="room-brand-row">
+            <div className="room-logo">LC</div>
+
+            <div>
+              <h1>LiveCollab</h1>
+              <p className="room-tagline">
+                Distributed real-time editor
+              </p>
+            </div>
+          </div>
+
+          <div className="room-identity">
+            <span>
+              Room <strong>{roomId}</strong>
+            </span>
+
+            <span className="identity-divider">•</span>
+
+            <span>
+              Signed in as <strong>{username}</strong>
+            </span>
+          </div>
         </div>
 
         <div className="room-header-right">
-          <div className="status" data-testid="connection-status">
+          <div
+            className={`status status-${connectionState}`}
+            data-testid="connection-status"
+          >
             {status}
           </div>
+
           <div className="share-box">
-            <input type="text" value={shareLink} readOnly />
-            <button onClick={handleCopyLink}>{copied ? "Copied!" : "Copy Link"}</button>
+            <input
+              type="text"
+              value={shareLink}
+              readOnly
+              aria-label="Room share link"
+            />
+
+            <button onClick={handleCopyLink}>
+              {copied ? "Copied!" : "Copy link"}
+            </button>
           </div>
         </div>
-      </div>
+      </header>
 
-      <div className="room-container">
-        <div className="editor">
+      <main className="room-container">
+        <section className="editor">
+          <div className="editor-topbar">
+            <div>
+              <h2>Shared document</h2>
+              <p>
+                Changes are synchronized across connected
+                backend instances.
+              </p>
+            </div>
+
+            <div className="editor-live-indicator">
+              <span className="editor-live-dot" />
+              Live
+            </div>
+          </div>
+
           <div className="editor-meta">
-            <div className="meta-pill secondary" data-testid="document-version">
-              Version {serverVersion}
-            </div>
-            <div className="meta-pill secondary" data-testid="event-sequence">
-              Event {lastSequence}
-            </div>
             {lastUpdatedBy && (
               <div className="meta-pill secondary">
-                Last updated by <strong>{lastUpdatedBy}</strong>
+                Last updated by{" "}
+                <strong>{lastUpdatedBy}</strong>
               </div>
             )}
+
+            {typingUser && (
+              <div className="meta-pill typing-pill">
+                <span className="typing-dot" />
+                {typingUser} is typing...
+              </div>
+            )}
+
             {lastOperationStatus && (
-              <div className="meta-pill" data-testid="operation-status">
+              <div
+                className="meta-pill"
+                data-testid="operation-status"
+              >
                 {lastOperationStatus}
               </div>
             )}
-            {typingUser && <div className="meta-pill">{typingUser} is typing...</div>}
           </div>
 
           <textarea
             data-testid="document-editor"
             value={content}
-            onChange={(e) => handleContentChange(e.target.value)}
+            onChange={(e) =>
+              handleContentChange(e.target.value)
+            }
             placeholder="Start collaborating in real time..."
           />
-        </div>
 
-        <div className="sidebar">
-          <div className="sidebar-header">
-            <h3>Online Users</h3>
-            <span className="user-count">{users.length} active</span>
+          <div className="diagnostics">
+            <button
+              type="button"
+              className="diagnostics-toggle"
+              onClick={() =>
+                setDiagnosticsOpen((open) => !open)
+              }
+              aria-expanded={diagnosticsOpen}
+            >
+              <div className="diagnostics-toggle-copy">
+                <span className="diagnostics-icon">
+                  &lt;/&gt;
+                </span>
+
+                <span>
+                  <strong>Developer diagnostics</strong>
+                  <small>
+                    Inspect synchronization and client state
+                  </small>
+                </span>
+              </div>
+
+              <span className="diagnostics-chevron">
+                {diagnosticsOpen ? "−" : "+"}
+              </span>
+            </button>
+
+            {diagnosticsOpen && (
+              <div className="diagnostics-panel">
+                <div className="diagnostics-grid">
+                  <div className="diagnostics-item">
+                    <span>Connection</span>
+                    <strong>{status}</strong>
+                  </div>
+
+                  <div className="diagnostics-item">
+                    <span>Server version</span>
+                    <strong
+                      data-testid="document-version"
+                    >
+                      {serverVersion}
+                    </strong>
+                  </div>
+
+                  <div className="diagnostics-item">
+                    <span>Event sequence</span>
+                    <strong
+                      data-testid="event-sequence"
+                    >
+                      {lastSequence}
+                    </strong>
+                  </div>
+
+                  <div className="diagnostics-item">
+                    <span>Participants</span>
+                    <strong>{users.length}</strong>
+                  </div>
+                </div>
+
+                <div className="diagnostics-client">
+                  <span>Client ID</span>
+                  <code>{clientIdRef.current}</code>
+                </div>
+
+                <div className="diagnostics-note">
+                  Version and sequence values are updated
+                  from the distributed event stream and
+                  replay protocol.
+                </div>
+              </div>
+            )}
           </div>
+        </section>
+
+        <aside className="sidebar">
+          <div className="sidebar-header">
+            <div>
+              <span className="sidebar-eyebrow">
+                Presence
+              </span>
+              <h3>Online users</h3>
+            </div>
+
+            <span className="user-count">
+              {users.length} active
+            </span>
+          </div>
+
           {users.length === 0 ? (
             <div className="sidebar-empty">
-              Nobody is connected yet. Share the room link to invite someone in.
+              Nobody is connected yet. Share the room link
+              to invite someone in.
             </div>
           ) : (
-            <ul>
+            <ul className="user-list">
               {users.map((u) => (
                 <li key={u.connectionId}>
-                  <span className="user-dot" />
-                  <span>{u.username}</span>
+                  <span className="user-avatar">
+                    {u.username
+                      .trim()
+                      .charAt(0)
+                      .toUpperCase()}
+                  </span>
+
+                  <div className="user-info">
+                    <strong>{u.username}</strong>
+                    <span>
+                      <span className="user-dot" />
+                      Online
+                    </span>
+                  </div>
+
+                  {u.username === username && (
+                    <span className="you-badge">You</span>
+                  )}
                 </li>
               ))}
             </ul>
           )}
-        </div>
-      </div>
+
+          <div className="sidebar-system">
+            <span className="sidebar-system-label">
+              Collaboration engine
+            </span>
+
+            <div className="sidebar-system-item">
+              <span>Transport</span>
+              <strong>WebSocket</strong>
+            </div>
+
+            <div className="sidebar-system-item">
+              <span>Event log</span>
+              <strong>Redis Streams</strong>
+            </div>
+
+            <div className="sidebar-system-item">
+              <span>Recovery</span>
+              <strong>Ordered replay</strong>
+            </div>
+          </div>
+        </aside>
+      </main>
     </div>
   );
 }

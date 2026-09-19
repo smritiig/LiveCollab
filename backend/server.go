@@ -1,11 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
+)
+
+type traceContextKey string
+
+const (
+	traceIDKey traceContextKey = "traceID"
+	spanIDKey  traceContextKey = "spanID"
 )
 
 type Application struct {
@@ -73,7 +81,37 @@ func (a *Application) Handler() http.Handler {
 			return
 		}
 
+		redisStarted := time.Now()
+
 		room, exists := a.manager.GetRoom(roomID)
+
+		redisEnded := time.Now()
+
+		traceID, _ := r.Context().Value(traceIDKey).(string)
+		parentSpanID, _ := r.Context().Value(spanIDKey).(string)
+		redisSpanID := NewSpanID()
+
+		if traceID != "" {
+			a.telemetry.Tracer.Export(Span{
+				TraceID:  traceID,
+				SpanID:   redisSpanID,
+				ParentID: parentSpanID,
+				Name:     "redis.get.room_snapshot",
+				Start:    redisStarted,
+				End:      redisEnded,
+				Attributes: map[string]any{
+					"room.id": roomID,
+				},
+			})
+
+			a.telemetry.Logger.Event("info", "redis_room_snapshot", map[string]any{
+				"traceId":    traceID,
+				"spanId":     redisSpanID,
+				"roomId":     roomID,
+				"durationMs": redisEnded.Sub(redisStarted).Seconds() * 1000,
+				"found":      exists,
+			})
+		}
 		if !exists {
 			http.Error(w, "room not found", http.StatusNotFound)
 			return
@@ -122,19 +160,46 @@ func (a *Application) Handler() http.Handler {
 
 func (a *Application) observeHTTP(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/metrics" {
+		if r.URL.Path == "/metrics" || r.URL.Path == "/ws" {
 			next.ServeHTTP(w, r)
 			return
 		}
+
 		started := time.Now()
 		traceID := NewTraceID()
 		spanID := NewSpanID()
+
+		ctx := context.WithValue(r.Context(), traceIDKey, traceID)
+		ctx = context.WithValue(ctx, spanIDKey, spanID)
+		r = r.WithContext(ctx)
+
 		a.telemetry.Metrics.HTTPRequest()
+
 		next.ServeHTTP(w, r)
-		duration := time.Since(started)
+
+		ended := time.Now()
+		duration := ended.Sub(started)
+
 		a.telemetry.Metrics.ObserveHTTP(duration.Seconds())
-		a.telemetry.Logger.Event("info", "http_request", map[string]any{"traceId": traceID, "method": r.Method, "path": r.URL.Path, "durationMs": duration.Seconds() * 1000})
-		a.telemetry.Tracer.Export(Span{TraceID: traceID, SpanID: spanID, Name: "HTTP " + r.Method + " " + r.URL.Path, Start: started, End: time.Now(), Attributes: map[string]any{"http.request.method": r.Method, "url.path": r.URL.Path}})
+
+		a.telemetry.Logger.Event("info", "http_request", map[string]any{
+			"traceId":    traceID,
+			"method":     r.Method,
+			"path":       r.URL.Path,
+			"durationMs": duration.Seconds() * 1000,
+		})
+
+		a.telemetry.Tracer.Export(Span{
+			TraceID: traceID,
+			SpanID:  spanID,
+			Name:    "HTTP " + r.Method + " " + r.URL.Path,
+			Start:   started,
+			End:     ended,
+			Attributes: map[string]any{
+				"http.request.method": r.Method,
+				"url.path":            r.URL.Path,
+			},
+		})
 	})
 }
 
